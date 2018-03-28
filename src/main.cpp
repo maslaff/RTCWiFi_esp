@@ -5,11 +5,53 @@
 #include <FS.h>
 #include <WiFiClient.h>
 
-#define DBG_OUTPUT_PORT Serial
+#define DBG_OUTPUT_PORT Serial1
+#define DATA_PORT Serial
+
+#define MAX_NUM_SWITCH 8
+#define MAX_NUM_THERM 8
 
 const char *ssid = "";
 const char *password = "";
 const char *host = "esp8266fs";
+bool comm = false;
+
+const char *STATES[2] = {"of", "on"};
+enum lightStateEnum { nig, day };
+enum stateEnum { off, onn };
+enum typechr { lit, dig, ld, non };
+
+struct timeStruct {
+  uint8_t h;
+  uint8_t m;
+};
+
+struct alarmStruct {
+  timeStruct of;
+  timeStruct on;
+};
+alarmStruct alarm;
+
+struct adtL {
+  uint8_t after;
+  uint8_t before;
+};
+adtL adtLoad;
+
+struct therm {
+  String adr;
+  float tmp;
+};
+therm therms[MAX_NUM_THERM];
+
+struct key {
+  String adr;
+  bool state;
+};
+key keys[MAX_NUM_SWITCH];
+
+String *thAdr[MAX_NUM_THERM];
+String *keyAdr[MAX_NUM_SWITCH];
 
 ESP8266WebServer server(80);
 // holds the current upload
@@ -149,7 +191,69 @@ void handleFileList() {
   server.send(200, "text/json", output);
 }
 
+uint8_t readLine(String &data) {
+  char buf[255];
+  int nb = DATA_PORT.readBytesUntil('\n', buf, 255);
+  data = String(buf);
+  return nb;
+}
+
+uint8_t parseOWAdr(String *adrs, uint8_t max) {
+  String instring;
+  for (size_t i = 0; i < max; i++) {
+    readLine(instring);
+    if (i == 0 && instring.indexOf("none") >= 0) { return 0; }
+    if (instring.indexOf("end") >= 0) { return i; }
+    instring.trim();
+    adrs[i] = instring;
+  }
+  while (instring.indexOf("end") < 0) { readLine(instring); }
+  return max;
+}
+
+bool parsePrPar() {
+  String instring;
+
+  while (readLine(instring) > 0) {
+    if (instring.indexOf("sa") >= 0) {
+      parseOWAdr(*keyAdr, MAX_NUM_SWITCH);
+      continue;
+    }
+    if (instring.indexOf("ta") >= 0) {
+      parseOWAdr(*thAdr, MAX_NUM_THERM);
+      continue;
+    }
+  }
+}
+
+bool setComm() {
+  comm = false;
+  DBG_OUTPUT_PORT.println("\nTry comm set...");
+  DATA_PORT.setTimeout(3000);
+  DATA_PORT.print("#esp");
+  if (DATA_PORT.find((char *)"#uno")) {
+    DBG_OUTPUT_PORT.println(
+        "Connection response recieved. Parsing primary parameters...");
+    DATA_PORT.print("ready");
+
+    if (DATA_PORT.find((char *)"end")) {
+      DATA_PORT.print("ok");
+      comm = true;
+      DBG_OUTPUT_PORT.println("Comm set success.");
+    } else
+      DBG_OUTPUT_PORT.println("Comm set failed. Not response end.");
+  } else
+    DBG_OUTPUT_PORT.println("Comm set failed. Not response start.");
+  DATA_PORT.setTimeout(1000);
+  return comm;
+}
+
+void handleData() {
+  if (!comm && !setComm()) return;
+}
+
 void setup(void) {
+  DATA_PORT.begin(115200);
   DBG_OUTPUT_PORT.begin(115200);
   DBG_OUTPUT_PORT.print("\n");
   DBG_OUTPUT_PORT.setDebugOutput(true);
@@ -222,6 +326,12 @@ void setup(void) {
   });
   server.begin();
   DBG_OUTPUT_PORT.println("HTTP server started");
+
+  for (size_t i = 0; i < MAX_NUM_THERM; i++) { thAdr[i] = &therms[i].adr; }
+  for (size_t i = 0; i < MAX_NUM_SWITCH; i++) { keyAdr[i] = &keys[i].adr; }
 }
 
-void loop(void) { server.handleClient(); }
+void loop(void) {
+  server.handleClient();
+  handleData();
+}
